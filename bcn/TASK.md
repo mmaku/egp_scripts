@@ -1,0 +1,1 @@
+W pliku template.py jest jakaś wstępna, bardzo nieudana próba transformacji tych danych. Chciałbym, abyś podsumował mi co tam się właściwie dzieje i jakie operacje zostały wykonane. A ja następnie wybiorę te, które mnie najbardziej interesują i zrobimy z tego taki bardziej usystematyzowany i lepiej zorganizowany flow.

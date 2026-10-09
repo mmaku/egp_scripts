@@ -9,7 +9,9 @@ from preprocessing import process
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Preprocess an Excel file.")
     parser.add_argument("input", type=Path, help="path to the source Excel file")
-    parser.add_argument("output", type=Path, help="path where the processed file is written")
+    parser.add_argument(
+        "output", type=Path, help="path where the processed file is written"
+    )
     # Optional configuration arguments go here once they are defined.
     return parser
 
