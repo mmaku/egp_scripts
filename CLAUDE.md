@@ -27,7 +27,9 @@ An Excel preprocessing tool. Per `bcn/TASK_en.md`, it should stay at one or two 
 
 The current target is a placeholder pipeline: read the Excel file, pass it through a no-op transform, and write it to the output path. Real preprocessing logic is explicitly out of scope until the input files are understood. The CLI should leave room for more options later.
 
-At the moment, `main.py` still contains only the `uv init` hello-world stub.
+The skeleton is in place. `main.py` uses argparse, and the second module is `preprocessing.py`, which runs `read_workbook` → `transform` → `write_workbook`. Real logic goes into `transform()`, which takes and returns a dict mapping sheet name to DataFrame and currently returns it unchanged. Sheets are read with `header=None` so that every row is data and the file round-trips unchanged. Revisit this once the header layout of the real files is known.
+
+Usage: `uv run main.py <input.xlsx> <output.xlsx>`
 
 ## Commands
 
