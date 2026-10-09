@@ -7,7 +7,7 @@
 Summarize what `template.py` does:
 
 1. List each operation it performs on the data, in the order it runs.
-2. For each operation, explain what it does and why it may have been added.
+2. For each operation, briefly explain what it does.
 
 ## Next step
 

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, csv, hashlib, hmac, html, json, math, re, sys, unicodedata
+import argparse, codecs, csv, hashlib, hmac, html, json, math, re, sys, unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -225,13 +225,12 @@ class HTMLText(HTMLParser):
 
     def handle_endtag(self, tag):
         tag = tag.lower()
-
-    if tag in self.SKIP and self.depth:
-        self.depth -= 1
-    elif not self.depth and tag in self.BLOCK:
-        self.parts.append("\n")
-    elif not self.depth and tag in self.CELL:
-        self.parts.append("\t")
+        if tag in self.SKIP and self.depth:
+            self.depth -= 1
+        elif not self.depth and tag in self.BLOCK:
+            self.parts.append("\n")
+        elif not self.depth and tag in self.CELL:
+            self.parts.append("\t")
 
     def handle_data(self, data):
         if not self.depth:
@@ -247,7 +246,8 @@ def nonnull(v):
 
 
 def simplify(v):
-    v = unicodedata.normalize("NFKD", v.casefold())
+    # NFKD does not decompose "ł", so map it by hand to match the ASCII rule keywords.
+    v = unicodedata.normalize("NFKD", v.casefold().replace("ł", "l"))
     return re.sub(
         r"\s+", " ", "".join(c for c in v if not unicodedata.combining(c))
     ).strip()
@@ -258,7 +258,9 @@ def detect_encoding(path):
     if raw.startswith(b"\xef\xbb\xbf"):
         return "utf-8-sig"
     try:
-        raw.decode("utf-8")
+        # Incremental decoder: a multi-byte character cut at the 200 KB
+        # boundary must not flip detection to cp1250.
+        codecs.getincrementaldecoder("utf-8")().decode(raw, final=False)
         return "utf-8-sig"
     except UnicodeDecodeError:
         return "cp1250"
@@ -273,25 +275,25 @@ def normalize(v):
             v = p.text()
         except Exception:
             v = re.sub(r"<[^>]+>", " ", v)
-        v = html.unescape(v)
-        v = unicodedata.normalize("NFKC", v)
-        v = (
-            v.translate(str.maketrans({"¦": "Ś", "¶": "ś", "±": "ą", "ˇ": "ż"}))
-            .replace("\u00a0", " ")
-            .replace("\r\n", "\n")
-            .replace("\r", "\n")
-        )
-        v = re.sub(r"<!--.*?-->", " ", v, flags=re.S)
-        v = re.sub(r"\b(?:P|SPAN|DIV)\s*\{[^{}]{0,2000}\}", " ", v, flags=re.I)
-        v = re.sub(
-            r"\b(?:mso-[\w-]+|font-family|font-size|margin(?:-[\w-]+)?|color)\s*:[^;\n]+;?",
-            " ",
-            v,
-            flags=re.I,
-        )
-        v = re.sub(r"[ \t]+", " ", v)
-        v = "\n".join(x.strip(" \t|") for x in v.splitlines())
-        return re.sub(r"\n{3,}", "\n\n", v).strip()
+    v = html.unescape(v)
+    v = unicodedata.normalize("NFKC", v)
+    v = (
+        v.translate(str.maketrans({"¦": "Ś", "¶": "ś", "±": "ą", "ˇ": "ż"}))
+        .replace("\u00a0", " ")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+    v = re.sub(r"<!--.*?-->", " ", v, flags=re.S)
+    v = re.sub(r"\b(?:P|SPAN|DIV)\s*\{[^{}]{0,2000}\}", " ", v, flags=re.I)
+    v = re.sub(
+        r"\b(?:mso-[\w-]+|font-family|font-size|margin(?:-[\w-]+)?|color)\s*:[^;\n]+;?",
+        " ",
+        v,
+        flags=re.I,
+    )
+    v = re.sub(r"[ \t]+", " ", v)
+    v = "\n".join(x.strip(" \t|") for x in v.splitlines())
+    return re.sub(r"\n{3,}", "\n\n", v).strip()
 
 
 MAIL_RE = re.compile(r"(?im)^\s*(?:from|od|sent|wysłano|to|do|cc|dw|subject|temat)\s*:")
@@ -306,30 +308,29 @@ def prepare(v):
         "the information transmitted is intended only",
     ):
         p = v.lower().find(marker)
-    if p >= 0:
-        pos.append(p)
+        if p >= 0:
+            pos.append(p)
     return normalize(v[: min(pos)] if pos else v)
 
 
 @dataclass
 class Pseudonymizer:
     key: bytes
-    maps: (Dict)[str, Dict[str, str]] = field(default_factory=dict)
+    maps: Dict[str, Dict[str, str]] = field(default_factory=dict)
     people: Set[str] = field(default_factory=set)
 
     def token(self, k, raw):
         raw = re.sub(r"\s+", " ", raw.strip())
         canon = raw.casefold()
         bucket = self.maps.setdefault(k, {})
-
-    if canon not in bucket:
-        bucket[canon] = "[{}_{}]".format(
-            k,
-            hmac.new(self.key, (k + "|" + canon).encode("utf-8"), hashlib.sha256)
-            .hexdigest()[:10]
-            .upper(),
-        )
-    return bucket[canon]
+        if canon not in bucket:
+            bucket[canon] = "[{}_{}]".format(
+                k,
+                hmac.new(self.key, (k + "|" + canon).encode("utf-8"), hashlib.sha256)
+                .hexdigest()[:10]
+                .upper(),
+            )
+        return bucket[canon]
 
     def add_person(self, v):
         v = re.sub(r"\s+\d{6,10}\s*$", "", nonnull(v)).strip()
@@ -378,9 +379,10 @@ class Pseudonymizer:
                 text,
                 flags=re.I,
             )
-        return normalize(text) @ dataclass
+        return normalize(text)
 
 
+@dataclass
 class Ticket:
     ticket_id: str
     related: List[str]
@@ -421,12 +423,10 @@ def first(text, rules, default):
 
 def system_of(text):
     upper = text.upper()
-
-
-for x in ("NCBO", "NCBD", "CRDP", "PNO", "KSEF"):
-    if x in upper:
-        return x
-return "NCB"
+    for x in ("NCBO", "NCBD", "CRDP", "PNO", "KSEF"):
+        if x in upper:
+            return x
+    return "NCB"
 
 
 def environment_of(text):
@@ -592,11 +592,13 @@ def iter_rows(path, encoding):
         for n, row in enumerate(csv.reader(f, delimiter=";", quotechar='"'), 1):
             if not row or not any(x.strip() for x in row):
                 continue
-        yield n, (
-            dict(zip(COLUMNS, row))
-            if len(row) == len(COLUMNS)
-            else {"_error": "{}: rekord {}: {} kolumn".format(path.name, n, len(row))}
-        )
+            yield n, (
+                dict(zip(COLUMNS, row))
+                if len(row) == len(COLUMNS)
+                else {
+                    "_error": "{}: rekord {}: {} kolumn".format(path.name, n, len(row))
+                }
+            )
 
 
 def inputs_of(items, input_dir, pattern):
@@ -705,43 +707,45 @@ def main():
     for path in files:
         if stop:
             break
-    for _, row in iter_rows(path, enc[path.name]):
-        if "_error" in row:
-            continue
-        if a.limit and processed >= a.limit:
-            stop = True
-            break
+        for _, row in iter_rows(path, enc[path.name]):
+            if "_error" in row:
+                continue
+            if a.limit and processed >= a.limit:
+                stop = True
+                break
             processed += 1
             stats["rekordy_wejsciowe"] += 1
             t = make_ticket(row, path, pseudo)
-        if not t:
-            continue
-        key = t.ticket_id.casefold()
-        if key in byid:
-            stats["duplikaty_id"] += 1
-            dups.append(t.ticket_id)
-            continue
-        if t.fingerprint in fps:
-            stats["duplikaty_tresci"] += 1
-            dups.append(t.ticket_id)
-            continue
-        byid[key] = t
-        fps[t.fingerprint] = t.ticket_id
-        stats["jakosc_" + t.quality.lower()] += 1
-    main = [
-        t
-        for t in byid.values()
-        if t.quality not in ("BRAK", "NISKA") and t.duplicate != "TAK"
-    ]
-    review = [t for t in byid.values() if t not in main]
+            if not t:
+                continue
+            key = t.ticket_id.casefold()
+            if key in byid:
+                stats["duplikaty_id"] += 1
+                dups.append(t.ticket_id)
+                continue
+            if t.fingerprint in fps:
+                stats["duplikaty_tresci"] += 1
+                dups.append(t.ticket_id)
+                continue
+            byid[key] = t
+            fps[t.fingerprint] = t.ticket_id
+            stats["jakosc_" + t.quality.lower()] += 1
+
+    def is_main(t):
+        return t.quality not in ("BRAK", "NISKA") and t.duplicate != "TAK"
+
+    main = [t for t in byid.values() if is_main(t)]
+    review = [t for t in byid.values() if not is_main(t)]
     selected = main + (review if a.include_review else [])
     groups = defaultdict(list)
     for t in selected:
         groups[(t.system, t.module)].append(t)
+    catch_all = ("NCB", "INNE")
     while len(groups) > a.max_files:
-        key = min(groups, key=lambda k: len(groups[k]))
+        # The catch-all never merges: popping it would re-add it to itself forever.
+        key = min((k for k in groups if k != catch_all), key=lambda k: len(groups[k]))
         vals = groups.pop(key)
-        target = (key[0], "INNE") if key[1] != "INNE" else ("NCB", "INNE")
+        target = (key[0], "INNE") if key[1] != "INNE" else catch_all
         groups[target].extend(vals)
     keys = list(groups)
     allocation = {k: 1 for k in keys}
@@ -756,35 +760,34 @@ def main():
     num = 0
     for key in sorted(keys):
         tickets = sorted(groups[key], key=lambda t: (t.resolution_date, t.ticket_id))
-    for batch in split_even(tickets, allocation[key]):
-        num += 1
-        name = "NCB_{:02d}_{}_{}.txt".format(num, key[0], key[1])
-        content = (
-            "BAZA WIEDZY NCB\nSYSTEM: {}\nMODUL: {}\nLICZBA_ZGLOSZEN: {}\n\n".format(
+        for batch in split_even(tickets, allocation[key]):
+            num += 1
+            name = "NCB_{:02d}_{}_{}.txt".format(num, key[0], key[1])
+            content = "BAZA WIEDZY NCB\nSYSTEM: {}\nMODUL: {}\nLICZBA_ZGLOSZEN: {}\n\n".format(
                 key[0], key[1], len(batch)
+            ) + "\n\n".join(
+                render(t) for t in batch
             )
-            + "\n\n".join(render(t) for t in batch)
-        )
-        write_text(a.output_dir / name, content)
-        generated.append(name)
-    for t in batch:
-        index.append(
-            {
-                "ticket_id": t.ticket_id,
-                "source_csv": t.source,
-                "package_file": name,
-                "ticket_type": t.ticket_type,
-                "system": t.system,
-                "environment": t.environment,
-                "module": t.module,
-                "processes": display(t.processes),
-                "symptoms": display(t.symptoms),
-                "error_codes": display(t.errors),
-                "resolution_type": t.resolution_type,
-                "quality": t.quality,
-                "title": t.title,
-            }
-        )
+            write_text(a.output_dir / name, content)
+            generated.append(name)
+            for t in batch:
+                index.append(
+                    {
+                        "ticket_id": t.ticket_id,
+                        "source_csv": t.source,
+                        "package_file": name,
+                        "ticket_type": t.ticket_type,
+                        "system": t.system,
+                        "environment": t.environment,
+                        "module": t.module,
+                        "processes": display(t.processes),
+                        "symptoms": display(t.symptoms),
+                        "error_codes": display(t.errors),
+                        "resolution_type": t.resolution_type,
+                        "quality": t.quality,
+                        "title": t.title,
+                    }
+                )
     fields = [
         "ticket_id",
         "source_csv",
